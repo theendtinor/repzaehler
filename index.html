@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Rep-Zähler</title>
+<style>
+  :root {
+    --bg: #0e1116; --card: #171b23; --card2: #1e232d; --line: #2a303c;
+    --text: #eef1f6; --muted: #8b93a5;
+    --up: #3ddc84; --down: #4aa8ff; --warn: #ffb020; --bad: #ff5d5d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: max(14px, env(safe-area-inset-top)) 14px max(18px, env(safe-area-inset-bottom)); }
+  .wrap { max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  button { font: inherit; color: inherit; touch-action: manipulation; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: .2px; }
+  .pill { font-size: 13px; padding: 6px 11px; border-radius: 99px; background: var(--card2);
+    color: var(--muted); display: inline-flex; align-items: center; gap: 7px; max-width: 70%; text-align: right; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .pill.run .dot { background: var(--up); box-shadow: 0 0 0 4px rgba(61,220,132,.18); }
+  .pill.cal .dot { background: var(--warn); }
+  .pill.err .dot { background: var(--bad); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+
+  .count { text-align: center; padding: 8px 0 4px; }
+  .count .label { font-size: 12px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; }
+  .count .num { font-size: 124px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums;
+    transition: transform .12s ease; }
+  .count .num.pop { transform: scale(1.12); }
+
+  .phase { display: flex; align-items: center; justify-content: space-between; min-height: 62px;
+    border-radius: 14px; padding: 12px 16px; background: var(--card2); border: 1px solid var(--line);
+    transition: background .1s, border-color .1s; }
+  .phase .name { font-size: 20px; font-weight: 650; }
+  .phase .time { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .phase.idle .name { color: var(--muted); font-size: 16px; font-weight: 500; }
+  .phase.idle .time { color: var(--muted); }
+  .phase.up { background: rgba(61,220,132,.13); border-color: rgba(61,220,132,.55); }
+  .phase.up .name, .phase.up .time { color: var(--up); }
+  .phase.down { background: rgba(74,168,255,.13); border-color: rgba(74,168,255,.55); }
+  .phase.down .name, .phase.down .time { color: var(--down); }
+
+  .set { display: flex; justify-content: space-between; align-items: baseline; padding: 2px 4px; }
+  .set .k { color: var(--muted); font-size: 14px; }
+  .set .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tile { background: var(--card2); border: 1px solid var(--line); border-radius: 14px; padding: 10px 6px; text-align: center; }
+  .tile .k { font-size: 12px; color: var(--muted); }
+  .tile .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .s { font-size: 11px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .tile.up .v { color: var(--up); } .tile.down .v { color: var(--down); }
+  .sect { font-size: 12px; letter-spacing: 1.5px; color: var(--muted); text-transform: uppercase; margin: 2px 4px -4px; }
+
+  canvas { width: 100%; height: 92px; display: block; border-radius: 12px; background: var(--card2); border: 1px solid var(--line); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: center; padding: 8px 4px; font-size: 15px; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; border-bottom: 1px solid var(--line); }
+  td { border-bottom: 1px solid rgba(42,48,60,.6); }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child, th:first-child { text-align: left; padding-left: 6px; color: var(--muted); }
+  td.u { color: var(--up); } td.d { color: var(--down); }
+  .empty { color: var(--muted); font-size: 14px; text-align: center; padding: 10px 0 4px; }
+  .tablewrap { max-height: 260px; overflow: auto; }
+
+  .btns { display: grid; grid-template-columns: 1fr auto; gap: 10px; position: sticky; bottom: 0; padding: 8px 0 2px;
+    background: linear-gradient(to top, var(--bg) 70%, transparent); }
+  .btn { border: 0; border-radius: 16px; padding: 18px; font-size: 19px; font-weight: 700; cursor: pointer; }
+  .btn.main { background: var(--up); color: #07220f; }
+  .btn.main.stop { background: var(--bad); color: #fff; }
+  .btn.main.wait { background: var(--warn); color: #2a1c00; }
+  .btn.sec { background: var(--card2); border: 1px solid var(--line); padding: 18px 18px; font-size: 16px; font-weight: 600; }
+  .btn:active { transform: scale(.98); }
+  .btn[disabled] { opacity: .4; }
+
+  .help { font-size: 15px; line-height: 1.5; color: #c6ccd8; }
+  .help ol { margin: 8px 0 0; padding-left: 20px; }
+  .help li { margin: 4px 0; }
+  .banner { border: 1px solid rgba(255,93,93,.5); background: rgba(255,93,93,.1); color: #ffb3b3;
+    border-radius: 14px; padding: 12px 14px; font-size: 14px; line-height: 1.45; }
+  .hidden { display: none !important; }
+
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 4px 16px; }
+  summary { padding: 12px 0; cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "▾"; float: right; color: var(--muted); }
+  details[open] summary::after { content: "▴"; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 15px; }
+  .row small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; line-height: 1.35; }
+  input[type=range] { width: 150px; accent-color: var(--up); }
+  input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--up); }
+  .linkbtn { background: none; border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+  .foot { color: var(--muted); font-size: 12px; text-align: center; line-height: 1.5; padding: 4px 8px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Rep-Zähler</h1>
+    <div class="pill" id="pill"><span class="dot"></span><span id="pillText">Bereit</span></div>
+  </header>
+
+  <div class="banner hidden" id="banner"></div>
+
+  <div class="card help" id="help">
+    <b>So geht's</b>
+    <ol>
+      <li>Handy <b>flach und fest</b> auf die Hantel bzw. Hantelscheibe legen (rutschfest, Display nach oben).</li>
+      <li><b>Start</b> drücken – nach 3 s Countdown und 1 s Kalibrierung geht's los.</li>
+      <li>Satz machen. Die App zählt jede Wiederholung und stoppt die Zeit für <b>Hoch</b> und <b>Runter</b>.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="count">
+      <div class="label">Wiederholungen</div>
+      <div class="num" id="num">0</div>
+    </div>
+  </div>
+
+  <div class="phase idle" id="phase">
+    <span class="name" id="phaseName">Warte auf Bewegung</span>
+    <span class="time" id="phaseTime"></span>
+  </div>
+
+  <div class="set card" style="padding:12px 16px">
+    <span class="k">Satzdauer (Zeit unter Spannung)</span>
+    <span class="v" id="setTime">0,0 s</span>
+  </div>
+
+  <div class="sect">Letzte Wiederholung</div>
+  <div class="tiles">
+    <div class="tile up"><div class="k">▲ Hoch</div><div class="v" id="lastUp">–</div><div class="s" id="avgUp">Ø –</div></div>
+    <div class="tile down"><div class="k">▼ Runter</div><div class="v" id="lastDown">–</div><div class="s" id="avgDown">Ø –</div></div>
+    <div class="tile"><div class="k">Gesamt</div><div class="v" id="lastTotal">–</div><div class="s" id="avgTotal">Ø –</div></div>
+  </div>
+
+  <div class="sect">Sensor-Verlauf (Geschwindigkeit)</div>
+  <canvas id="chart"></canvas>
+
+  <div class="sect">Alle Wiederholungen</div>
+  <div class="card" style="padding:8px 10px">
+    <div class="empty" id="empty">Noch keine Wiederholung.</div>
+    <div class="tablewrap hidden" id="tablewrap">
+      <table>
+        <thead><tr><th>#</th><th>▲ Hoch</th><th>▼ Runter</th><th>Gesamt</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <details>
+    <summary>Einstellungen</summary>
+    <div class="row">
+      <div>Empfindlichkeit<small>Mindest-Bewegungsweg pro Hoch/Runter. Kleiner = empfindlicher, aber anfälliger für Wackler.</small></div>
+      <div style="text-align:right"><input type="range" id="minDisp" min="5" max="30" step="1"><div id="minDispVal" style="font-size:13px;color:var(--muted)"></div></div>
+    </div>
+    <div class="row"><div>Ton bei jeder Wiederholung</div><input type="checkbox" id="optSound"></div>
+    <div class="row"><div>Vibration bei jeder Wiederholung</div><input type="checkbox" id="optVib"></div>
+    <div class="row"><div>Demo ohne Sensor<small>Spielt einen simulierten Satz ab, um die Anzeige zu testen.</small></div><button class="linkbtn" id="demoBtn">Demo</button></div>
+    <div class="row" style="border-bottom:0"><div>Sensor<small id="sensorInfo">–</small></div></div>
+  </details>
+
+  <div class="btns">
+    <button class="btn main" id="mainBtn">Start</button>
+    <button class="btn sec" id="newSetBtn" disabled>Neuer Satz</button>
+  </div>
+  <div class="foot">Die Genauigkeit hängt vom Handy-Sensor ab. Für beste Ergebnisse das Handy fest fixieren<br>und ganze, saubere Wiederholungen machen.</div>
+</div>
+
+<script>
+/* RepDetector – erkennt Hoch-/Runter-Phasen aus Handy-Beschleunigungssensoren.
+ *
+ * Eingabe pro Sample: Zeit t (s), accelerationIncludingGravity (aig, 3-Vektor)
+ * und optional lineare Beschleunigung ohne Schwerkraft (lin, 3-Vektor).
+ *
+ * Ablauf:
+ *  0. Kalibrierung (erste ~1 s Ruhe): Offset der Vertikalbeschleunigung bestimmen.
+ *  1. "Oben" = Richtung der (tiefpassgefilterten) Schwerkraft -> Handy darf beliebig liegen.
+ *  2. Vertikalbeschleunigung - Offset -> Geschwindigkeit v (Integration).
+ *     In Ruhe wird der Offset nachgeführt und v zu 0 gezogen (verhindert Drift).
+ *  3. Eine Phase beginnt, wenn |v| die Schwelle überschreitet, und endet, wenn v wieder
+ *     ~0 erreicht (Nulldurchgang) oder die Beschleunigung länger ruhig ist. Danach v = 0.
+ *  4. Phasen mit zu kleinem Weg / zu kleiner Geschwindigkeit / zu kurzer Dauer werden verworfen.
+ *  5. Eine Wiederholung = zwei aufeinanderfolgende Phasen in entgegengesetzter Richtung.
+ */
+class RepDetector {
+  constructor(opts) {
+    this.cfg = Object.assign({
+      minDisp: 0.10,    // m   Mindestweg einer Phase
+      vmin: 0.07,       // m/s Mindest-Spitzengeschwindigkeit einer Phase
+      epsHi: 0.04,      // m/s Start-Schwelle
+      epsLo: 0.012,     // m/s Ende-Schwelle
+      calTime: 1.0,     // s   Kalibrierzeit
+      tauG: 0.5,        // s   Schwerkraft-Richtung
+      tauA: 0.08,       // s   Glättung der Beschleunigung
+      tauBase: 2.5,     // s   Offset-Nachführung in Ruhe
+      baseGate: 0.08,   // m/s² Offset wird nur nachgeführt, wenn |a - offset| darunter liegt
+      quietA: 0.06,     // m/s² "ruhig" (v wird in Ruhe zu 0 gezogen)
+      tauIdle: 0.5,     // s   Dämpfung von v in Ruhe
+      quietEnd: 0.4,    // s   Phase endet nach so langer Ruhe, wenn |v| klein
+      quietEndV: 0.06,  // m/s
+      minPhase: 0.25,   // s
+      maxPhase: 12,     // s
+      pairGap: 8,       // s   max. Pause zwischen den zwei Hälften einer Wiederholung
+      driftGain: 0.25,  // Stärke der Offset-Korrektur nach jeder Wiederholung
+      maxBaseStep: 0.04 // m/s² max. Korrektur pro Wiederholung
+    }, opts || {});
+    this.reset();
+  }
+
+  reset() {
+    this.g = null; this.last = null; this.aS = 0; this.base = 0;
+    this.v = 0; this.seg = null; this.idleT = null; this.pending = null;
+    this.reps = []; this.phases = [];
+    this.setStart = null; this.lastEnd = null; this.t = 0;
+    this.calT0 = null; this.calSum = 0; this.calN = 0; this.calibrated = false;
+    this.hist = []; this.quietT = null; this.q = []; this.qOld = null;
+  }
+
+  // Nur Zähler/Verlauf löschen, Sensor-Zustand (Schwerkraft, Offset) behalten.
+  resetSet() {
+    this.reps = []; this.phases = []; this.pending = null;
+    this.setStart = null; this.lastEnd = null; this.seg = null; this.v = 0;
+    this.idleT = this.t; this.hist = [];
+  }
+
+  push(t, aig, lin) {
+    const c = this.cfg, ev = [];
+    if (this.last === null) {
+      this.last = t; this.t = t; this.g = aig.slice(); this.idleT = t;
+      this.calT0 = t; return ev;
+    }
+    let dt = t - this.last;
+    if (dt <= 0) return ev;
+    this.last = t; this.t = t;
+    if (dt > 0.5) { // Datenlücke -> neu kalibrieren
+      this.seg = null; this.v = 0; this.idleT = t; this.hist = [];
+      this.calibrated = false; this.calT0 = t; this.calSum = 0; this.calN = 0; dt = 0.02;
+    }
+    if (dt > 0.1) dt = 0.1;
+
+    // Schwerkraft-Richtung ("oben")
+    const g = this.g, ag = Math.min(1, dt / c.tauG);
+    for (let i = 0; i < 3; i++) g[i] += (aig[i] - g[i]) * ag;
+    const gn = Math.hypot(g[0], g[1], g[2]) || 1;
+    const ux = g[0] / gn, uy = g[1] / gn, uz = g[2] / gn;
+
+    const src = lin || aig;
+    const a = src[0] * ux + src[1] * uy + src[2] * uz;
+
+    // Kalibrierung
+    if (!this.calibrated) {
+      this.calSum += a; this.calN++;
+      this.aS = a;
+      if (t - this.calT0 >= c.calTime && this.calN > 5) {
+        this.base = this.calSum / this.calN; this.aS = this.base;
+        this.calibrated = true; this.idleT = t; this.v = 0; this.q = []; this.qOld = null;
+      }
+      return ev;
+    }
+
+    this.aS += (a - this.aS) * Math.min(1, dt / c.tauA);
+    let acc = this.aS - this.base;
+
+    // Offset nachführen: nur wenn das Handy die letzten 0,7 s wirklich ruhig war,
+    // und mit einem 0,7 s alten Wert (damit der Beginn einer Bewegung nie einfließt).
+    this.q.push([t, this.aS]);
+    let quiet = true;
+    for (let i = 0; i < this.q.length; i++) if (Math.abs(this.q[i][1] - this.base) >= c.baseGate) { quiet = false; break; }
+    while (this.q.length && t - this.q[0][0] > 0.7) this.qOld = this.q.shift();
+    if (!this.seg && quiet && this.qOld) {
+      this.base += (this.qOld[1] - this.base) * Math.min(1, dt / c.tauBase);
+      acc = this.aS - this.base;
+    }
+
+    // Geschwindigkeit
+    this.v += acc * dt;
+    if (!this.seg && Math.abs(acc) < c.quietA) this.v -= this.v * Math.min(1, dt / c.tauIdle);
+    const v = this.v;
+
+    // Ruhe-Erkennung der Beschleunigung
+    if (Math.abs(acc) < 0.05) { if (this.quietT === null) this.quietT = t; }
+    else this.quietT = null;
+
+    if (!this.seg) {
+      this.hist.push([t, v]);
+      while (this.hist.length && t - this.hist[0][0] > 0.8) this.hist.shift();
+      if (Math.abs(v) > c.epsHi) {
+        const dir = v > 0 ? 1 : -1;
+        this.seg = { dir, t0: this.idleT, disp: 0, peak: 0,
+                     tr: this.hist.filter(h => h[0] >= this.idleT - 0.3).map(h => [h[0], h[1] * dir]) };
+        this.hist = [];
+      } else {
+        this.idleT = t;
+      }
+    } else {
+      this.seg.tr.push([t, v * this.seg.dir]);
+    }
+    if (this.seg) {
+      const s = this.seg, sv = v * s.dir;
+      s.disp += sv * dt;
+      if (sv > s.peak) s.peak = sv;
+      const elapsed = t - s.t0;
+      // Ruhe in der Beschleunigung + Geschwindigkeit klein (absolut oder im Vergleich zur Spitze)
+      // -> Phase ist zu Ende (auch wenn ein kleiner Geschwindigkeits-Offset übrig ist).
+      const quietEnd = this.quietT !== null && t - this.quietT >= c.quietEnd &&
+                       (sv < c.quietEndV || sv < 0.35 * s.peak);
+      if (sv < c.epsLo || quietEnd || elapsed > c.maxPhase) {
+        // genaue Zeiten aus dem Geschwindigkeitsverlauf: Anteil der Spitzengeschwindigkeit
+        const thr = Math.max(0.05 * s.peak, 0.015);
+        const tEnd = (quietEnd && sv >= c.epsLo) ? this.quietT : Infinity; // Ende = Beginn der Ruhe
+        let i0 = -1, i1 = -1;
+        for (let i = 0; i < s.tr.length; i++) {
+          if (s.tr[i][0] > tEnd) break;
+          if (s.tr[i][1] > thr) { if (i0 < 0) i0 = i; i1 = i; }
+        }
+        this.seg = null; this.v = 0; this.idleT = t; this.hist = [];
+        if (i0 >= 0 && elapsed <= c.maxPhase) {
+          const t0 = s.tr[i0][0], t1 = s.tr[i1][0], dur = t1 - t0;
+          if (dur >= c.minPhase && s.disp >= c.minDisp && s.peak >= c.vmin)
+            this._phase({ dir: s.dir, t0, t1, dur, disp: s.disp, peak: s.peak }, ev);
+        }
+      }
+    }
+    return ev;
+  }
+
+  _phase(ph, ev) {
+    const c = this.cfg;
+    if (this.setStart === null) this.setStart = ph.t0;
+    this.lastEnd = ph.t1;
+    this.phases.push(ph);
+    ev.push({ type: 'phase', phase: ph });
+    const p = this.pending;
+    if (p && p.dir !== ph.dir && ph.t0 - p.t1 <= c.pairGap) {
+      const up = p.dir > 0 ? p : ph, down = p.dir > 0 ? ph : p;
+      const rep = {
+        n: this.reps.length + 1,
+        firstDir: p.dir,
+        up: up.dur, down: down.dur,
+        total: ph.t1 - p.t0,
+        t0: p.t0, t1: ph.t1
+      };
+      this.pending = null;
+      this.reps.push(rep);
+      ev.push({ type: 'rep', rep });
+      // Drift-Korrektur: Nach einer Wiederholung ist das Gewicht wieder am Ausgangspunkt,
+      // Weg hoch und Weg runter müssen also gleich groß sein. Die Abweichung M entsteht durch
+      // einen Offset e der Beschleunigung (M ≈ e·T²/2) -> Offset nachziehen.
+      const M = p.dir * p.disp + ph.dir * ph.disp;
+      const Tm = p.dur + ph.dur;
+      let e = 2 * M / (Tm * Tm);
+      e = Math.max(-c.maxBaseStep, Math.min(c.maxBaseStep, c.driftGain * e));
+      this.base += e;
+    } else {
+      this.pending = ph;
+    }
+  }
+
+  // Für die Anzeige
+  state() {
+    const s = this.seg;
+    return {
+      v: this.v,
+      calibrating: !this.calibrated,
+      live: s ? { dir: s.dir, elapsed: this.t - s.t0 } : null,
+      count: this.reps.length,
+      reps: this.reps,
+      setStart: this.setStart,
+      lastEnd: this.lastEnd,
+      t: this.t
+    };
+  }
+}
+
+
+</script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var store = {
+    get: function (k, d) { try { var v = localStorage.getItem('rz_' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set: function (k, v) { try { localStorage.setItem('rz_' + k, JSON.stringify(v)); } catch (e) {} }
+  };
+
+  var COUNTDOWN = 3;
+  var det = new RepDetector({ minDisp: store.get('minDisp', 10) / 100 });
+  var mode = 'idle';            // idle | countdown | running
+  var demo = false, demoTimer = null, cdTimer = null, cdEnd = 0;
+  var permState = null;
+  var useLin = null, evCount = 0, firstEvT = 0, lastEvT = 0, signalTimer = null;
+  var wakeLock = null, audioCtx = null;
+  var hist = [];                // [t, v, dir] für das Diagramm
+  var shownCount = -1, lastHistT = 0;
+
+  // ---------- Hilfsfunktionen ----------
+  function fmt(x, d) { return x.toFixed(d === undefined ? 1 : d).replace('.', ','); }
+  function fmtS(x) { return fmt(x, 1) + ' s'; }
+  function fmtSet(x) { if (x >= 60) { var m = Math.floor(x / 60); return m + ':' + (x - m * 60 < 10 ? '0' : '') + fmt(x - m * 60, 1); } return fmt(x, 1) + ' s'; }
+  function nowT() { return performance.now() / 1000; }
+
+  function showBanner(msg) { var b = $('banner'); if (msg) { b.textContent = msg; b.classList.remove('hidden'); } else b.classList.add('hidden'); }
+
+  function beep() {
+    if (!store.get('sound', true) || !audioCtx) return;
+    try {
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = 880; g.gain.value = 0.0001;
+      o.connect(g); g.connect(audioCtx.destination);
+      var t = audioCtx.currentTime;
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+      o.start(t); o.stop(t + 0.16);
+    } catch (e) {}
+  }
+  function buzz() { if (store.get('vib', true) && navigator.vibrate) { try { navigator.vibrate(35); } catch (e) {} } }
+
+  async function lockScreen() {
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  function unlockScreen() { try { if (wakeLock) wakeLock.release(); } catch (e) {} wakeLock = null; }
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && mode !== 'idle' && !demo) lockScreen(); });
+
+  // ---------- Sensor ----------
+  function onMotion(e) {
+    if (mode !== 'running' || demo) return;
+    var ag = e.accelerationIncludingGravity;
+    if (!ag || ag.x == null || ag.y == null || ag.z == null) return;
+    var a = e.acceleration;
+    if (useLin === null) useLin = !!(a && a.x != null && a.y != null && a.z != null);
+    var t = (e.timeStamp || performance.now()) / 1000;
+    if (evCount === 0) firstEvT = t;
+    evCount++; lastEvT = t;
+    handle(det.push(t, [ag.x, ag.y, ag.z], useLin ? [a.x, a.y, a.z] : null));
+  }
+
+  function handle(events) {
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].type === 'rep') {
+        beep(); buzz();
+        var n = $('num'); n.classList.add('pop'); setTimeout(function () { n.classList.remove('pop'); }, 130);
+      }
+    }
+  }
+
+  // ---------- Ablauf ----------
+  async function start() {
+    showBanner('');
+    try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {}
+    // iOS verlangt eine ausdrückliche Erlaubnis; auf Android nicht nötig.
+    // Chromium-Browser (z. B. Vanadium) bieten die Funktion ebenfalls an, melden damit aber nur den
+    // aktuellen Einstellungsstand. Deshalb nur auf iOS abbrechen, sonst einfach versuchen.
+    permState = null;
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      try {
+        permState = await DeviceMotionEvent.requestPermission();
+        var isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        if (permState !== 'granted' && isIOS) { showBanner('Zugriff auf die Bewegungssensoren wurde nicht erlaubt.'); return; }
+      } catch (e) {}
+    }
+    if (!demo && typeof DeviceMotionEvent === 'undefined') { showBanner('Dieser Browser unterstützt keine Bewegungssensoren. Bitte Chrome auf dem Android-Handy benutzen.'); return; }
+    det.reset(); hist = []; shownCount = -1; useLin = null; evCount = 0;
+    $('help').classList.add('hidden');
+    lockScreen();
+    mode = 'countdown'; cdEnd = nowT() + COUNTDOWN;
+    cdTimer = setInterval(function () {
+      if (nowT() >= cdEnd) { clearInterval(cdTimer); cdTimer = null; beginRun(); }
+    }, 100);
+    setButtons();
+  }
+
+  function beginRun() {
+    mode = 'running'; evCount = 0; useLin = null;
+    det.reset(); hist = []; shownCount = -1;
+    if (audioCtx) { try { beep(); } catch (e) {} }
+    clearTimeout(signalTimer);
+    signalTimer = setTimeout(function () {
+      if (mode === 'running' && !demo && evCount === 0) {
+        var framed = false; try { framed = window.self !== window.top; } catch (e) { framed = true; }
+        showBanner(permState === 'denied'
+          ? 'Der Browser meldet die Bewegungssensoren als gesperrt und es kommen keine Daten an. Vanadium: Einstellungen → Website-Einstellungen → Bewegungssensoren → global erlauben (für lokale Dateien gibt es keine Einzelfreigabe), danach die Seite komplett neu laden. Zusätzlich: Android-Einstellungen → Apps → Vanadium → Berechtigungen → Sensoren erlauben.'
+          : window.isSecureContext === false
+          ? 'Kein Sensor-Signal: Chrome gibt Bewegungssensoren nur auf sicheren Seiten (https) frei. Lege die Datei z. B. auf GitHub Pages ab und öffne sie von dort.'
+          : framed
+          ?'Kein Sensor-Signal. Die Seite läuft gerade eingebettet – bitte direkt im Chrome-Browser öffnen (Link kopieren und in Chrome einfügen).'
+          : 'Kein Sensor-Signal. Prüfe in den Android-/Chrome-Einstellungen (Website-Einstellungen → Bewegungssensoren), dass Sensoren für diese Seite erlaubt sind.');
+      }
+    }, 2500);
+    setButtons();
+  }
+
+  function stop() {
+    clearInterval(cdTimer); cdTimer = null; clearInterval(demoTimer); demoTimer = null; clearTimeout(signalTimer);
+    demo = false; mode = 'idle'; unlockScreen(); setButtons();
+  }
+
+  function newSet() { det.resetSet(); hist = []; shownCount = -1; }
+
+  function setButtons() {
+    var b = $('mainBtn');
+    b.classList.remove('stop', 'wait');
+    if (mode === 'idle') b.textContent = det.reps.length ? 'Neuer Start' : 'Start';
+    else if (mode === 'countdown') { b.textContent = 'Abbrechen'; b.classList.add('wait'); }
+    else { b.textContent = 'Stopp'; b.classList.add('stop'); }
+    $('newSetBtn').disabled = mode !== 'running';
+  }
+
+  $('mainBtn').addEventListener('click', function () { if (mode === 'idle') start(); else stop(); });
+  $('newSetBtn').addEventListener('click', newSet);
+  window.addEventListener('devicemotion', onMotion);
+
+  // ---------- Demo ----------
+  $('demoBtn').addEventListener('click', function () {
+    if (mode !== 'idle') stop();
+    demo = true; showBanner('');
+    det.reset(); hist = []; shownCount = -1; $('help').classList.add('hidden');
+    var segs = [], i;
+    for (i = 0; i < 6; i++) segs.push({ d: -0.40, T: 1.9 }, { h: 0.3 }, { d: 0.40, T: 1.4 }, { h: 0.7 });
+    var t = 2.5, tl = [];
+    segs.forEach(function (s) { var T = s.T || s.h; tl.push({ s: s, t0: t, t1: t + T }); t += T; });
+    var end = t + 3, t0 = nowT();
+    mode = 'running'; setButtons();
+    demoTimer = setInterval(function () {
+      var tn = nowT(), tt = tn - t0, a = 0;
+      for (var k = 0; k < tl.length; k++) {
+        var x = tl[k];
+        if (tt >= x.t0 && tt < x.t1 && x.s.d) {
+          var u = (tt - x.t0) / x.s.T;
+          a = x.s.d * (60 * u - 180 * u * u + 120 * u * u * u) / (x.s.T * x.s.T);
+        }
+      }
+      var n1 = (Math.random() - 0.5) * 0.06, n2 = (Math.random() - 0.5) * 0.06, n3 = (Math.random() - 0.5) * 0.06;
+      handle(det.push(tn, [n1, n2, 9.81 + a + n3], [n1, n2, a + n3]));
+      if (tt > end) stop();
+    }, 16);
+  });
+
+  // ---------- Einstellungen ----------
+  var slider = $('minDisp');
+  slider.value = store.get('minDisp', 10);
+  function showSlider() { $('minDispVal').textContent = slider.value + ' cm'; }
+  showSlider();
+  slider.addEventListener('input', function () {
+    showSlider(); store.set('minDisp', +slider.value); det.cfg.minDisp = slider.value / 100;
+  });
+  $('optSound').checked = store.get('sound', true);
+  $('optVib').checked = store.get('vib', true);
+  $('optSound').addEventListener('change', function (e) { store.set('sound', e.target.checked); });
+  $('optVib').addEventListener('change', function (e) { store.set('vib', e.target.checked); });
+
+  // ---------- Anzeige ----------
+  var chart = $('chart'), cctx = chart.getContext('2d');
+  function drawChart(nowTime) {
+    var dpr = window.devicePixelRatio || 1, w = chart.clientWidth, h = chart.clientHeight;
+    if (chart.width !== Math.round(w * dpr)) { chart.width = Math.round(w * dpr); chart.height = Math.round(h * dpr); }
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.clearRect(0, 0, w, h);
+    var span = 10, vmax = 0.8, mid = h / 2;
+    cctx.strokeStyle = 'rgba(139,147,165,.35)'; cctx.lineWidth = 1;
+    cctx.beginPath(); cctx.moveTo(0, mid); cctx.lineTo(w, mid); cctx.stroke();
+    if (hist.length < 2) return;
+    var i, p, x, y, prevDir = 0;
+    cctx.lineWidth = 2.5; cctx.lineJoin = 'round';
+    for (i = 1; i < hist.length; i++) {
+      var a = hist[i - 1], b = hist[i];
+      if (nowTime - b[0] > span) continue;
+      var dir = b[2];
+      cctx.strokeStyle = dir > 0 ? '#3ddc84' : dir < 0 ? '#4aa8ff' : 'rgba(238,241,246,.55)';
+      cctx.beginPath();
+      cctx.moveTo(w - (nowTime - a[0]) / span * w, mid - Math.max(-1, Math.min(1, a[1] / vmax)) * (mid - 6));
+      cctx.lineTo(w - (nowTime - b[0]) / span * w, mid - Math.max(-1, Math.min(1, b[1] / vmax)) * (mid - 6));
+      cctx.stroke();
+    }
+  }
+
+  function render() {
+    requestAnimationFrame(render);
+    var s = det.state(), tn = nowT();
+
+    // Status
+    var pill = $('pill'), pt = $('pillText');
+    pill.className = 'pill';
+    if (mode === 'idle') { pt.textContent = det.reps.length ? 'Gestoppt' : 'Bereit'; }
+    else if (mode === 'countdown') {
+      pill.classList.add('cal'); pt.textContent = 'Handy auflegen … ' + Math.max(1, Math.ceil(cdEnd - tn));
+    } else if (s.calibrating) { pill.classList.add('cal'); pt.textContent = 'Kalibriere – nicht bewegen'; }
+    else {
+      pill.classList.add('run');
+      pt.textContent = s.live ? 'Bewegung erkannt' : 'Bereit – los geht\'s';
+    }
+    if (mode === 'running' && !demo && evCount > 20) {
+      var hz = Math.round((evCount - 1) / Math.max(0.001, lastEvT - firstEvT));
+      $('sensorInfo').textContent = 'Aktiv, ca. ' + hz + ' Hz, ' + (useLin ? 'lineare Beschleunigung' : 'Beschleunigung inkl. Schwerkraft');
+    } else if (mode === 'idle' && evCount === 0) { $('sensorInfo').textContent = 'Wird beim Start geprüft.'; }
+
+    // Zähler
+    if (s.count !== shownCount) {
+      $('num').textContent = s.count;
+      renderRows(s);
+      shownCount = s.count;
+    }
+
+    // Live-Phase
+    var ph = $('phase'), pn = $('phaseName'), ptm = $('phaseTime');
+    if (mode === 'running' && s.live) {
+      ph.className = 'phase ' + (s.live.dir > 0 ? 'up' : 'down');
+      pn.textContent = s.live.dir > 0 ? '▲ HOCH' : '▼ RUNTER';
+      ptm.textContent = fmtS(Math.max(0, s.live.elapsed));
+    } else {
+      ph.className = 'phase idle';
+      pn.textContent = mode === 'idle' ? (s.count ? 'Satz beendet' : 'Warte auf Start') :
+                       (mode === 'countdown' || s.calibrating) ? 'Gleich geht\'s los …' : 'Warte auf Bewegung';
+      ptm.textContent = '';
+    }
+
+    // Satzdauer
+    var sd = 0;
+    if (s.setStart !== null) {
+      var active = mode === 'running' && (s.live || (tn - s.lastEnd) < 4);
+      sd = (active ? tn : s.lastEnd) - s.setStart;
+    }
+    $('setTime').textContent = fmtSet(Math.max(0, sd));
+
+    // Diagramm
+    if (mode === 'running' && !s.calibrating && tn - lastHistT > 0.03) {
+      lastHistT = tn; hist.push([tn, s.v, s.live ? s.live.dir : 0]);
+      while (hist.length && tn - hist[0][0] > 11) hist.shift();
+    }
+    drawChart(tn);
+  }
+
+  function renderRows(s) {
+    var reps = s.reps, tb = $('rows'), i;
+    $('empty').classList.toggle('hidden', reps.length > 0);
+    $('tablewrap').classList.toggle('hidden', reps.length === 0);
+    var html = '';
+    for (i = reps.length - 1; i >= 0; i--) {
+      var r = reps[i];
+      html += '<tr><td>' + r.n + '</td><td class="u">' + fmtS(r.up) + '</td><td class="d">' + fmtS(r.down) + '</td><td>' + fmtS(r.total) + '</td></tr>';
+    }
+    tb.innerHTML = html;
+    if (reps.length) {
+      var l = reps[reps.length - 1], su = 0, sdn = 0, st = 0;
+      reps.forEach(function (r) { su += r.up; sdn += r.down; st += r.total; });
+      $('lastUp').textContent = fmtS(l.up); $('lastDown').textContent = fmtS(l.down); $('lastTotal').textContent = fmtS(l.total);
+      $('avgUp').textContent = 'Ø ' + fmtS(su / reps.length); $('avgDown').textContent = 'Ø ' + fmtS(sdn / reps.length); $('avgTotal').textContent = 'Ø ' + fmtS(st / reps.length);
+    } else {
+      ['lastUp', 'lastDown', 'lastTotal'].forEach(function (id) { $(id).textContent = '–'; });
+      ['avgUp', 'avgDown', 'avgTotal'].forEach(function (id) { $(id).textContent = 'Ø –'; });
+    }
+    setButtons();
+  }
+
+  // Hinweis, wenn die Seite eingebettet läuft (Sensoren sind dort oft gesperrt)
+  try { if (window.self !== window.top) showBanner('Hinweis: Die Seite läuft eingebettet. Falls kein Sensor-Signal kommt, öffne sie direkt in Chrome.'); } catch (e) {}
+
+  render();
+})();
+</script>
+</body>
+</html>
