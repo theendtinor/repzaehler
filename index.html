@@ -167,6 +167,7 @@
     <div class="row"><div>Ton bei jeder Wiederholung</div><input type="checkbox" id="optSound"></div>
     <div class="row"><div>Vibration bei jeder Wiederholung</div><input type="checkbox" id="optVib"></div>
     <div class="row"><div>Demo ohne Sensor<small>Spielt einen simulierten Satz ab, um die Anzeige zu testen.</small></div><button class="linkbtn" id="demoBtn">Demo</button></div>
+    <div class="row"><div>Messdaten speichern<small>Speichert die Sensor-Rohdaten des letzten Laufs als Datei – hilfreich, falls die Erkennung nicht passt.</small></div><button class="linkbtn" id="saveBtn">Speichern</button></div>
     <div class="row" style="border-bottom:0"><div>Sensor<small id="sensorInfo">–</small></div></div>
   </details>
 
@@ -184,205 +185,307 @@
  * und optional lineare Beschleunigung ohne Schwerkraft (lin, 3-Vektor).
  *
  * Ablauf:
- *  0. Kalibrierung (erste ~1 s Ruhe): Offset der Vertikalbeschleunigung bestimmen.
- *  1. "Oben" = Richtung der (tiefpassgefilterten) Schwerkraft -> Handy darf beliebig liegen.
- *  2. Vertikalbeschleunigung - Offset -> Geschwindigkeit v (Integration).
- *     In Ruhe wird der Offset nachgeführt und v zu 0 gezogen (verhindert Drift).
- *  3. Eine Phase beginnt, wenn |v| die Schwelle überschreitet, und endet, wenn v wieder
- *     ~0 erreicht (Nulldurchgang) oder die Beschleunigung länger ruhig ist. Danach v = 0.
- *  4. Phasen mit zu kleinem Weg / zu kleiner Geschwindigkeit / zu kurzer Dauer werden verworfen.
- *  5. Eine Wiederholung = zwei aufeinanderfolgende Phasen in entgegengesetzter Richtung.
+ *  0. "Oben" = Richtung der Schwerkraft. Mit lin: aig - lin (Sensorfusion des Handys),
+ *     sonst tiefpassgefiltertes aig. Die Vertikalbeschleunigung wird immer aus den
+ *     Rohdaten (aig) gebildet, lin dient nur der Richtung.
+ *  1. Kalibrierung (~1 s Ruhe): Offset der Vertikalbeschleunigung.
+ *  2. Beschleunigung - Offset -> Geschwindigkeit v -> Position p (Integration).
+ *  3. Ruhe-Erkennung: Beschleunigung konstant ~0 und v klein -> v = 0, Offset nachführen.
+ *  4. Phasen werden über den WEG erkannt, nicht über Nulldurchgänge von v:
+ *     Eine Phase läuft, solange p in eine Richtung wandert, und endet, wenn p um ein
+ *     Stück zurückläuft (Umkehrpunkt) oder das Handy ruht. Kleine Wackler teilen
+ *     eine Phase dadurch nicht mehr.
+ *  5. Nach jeder Wiederholung ist das Gewicht wieder am Ausgangspunkt -> daraus wird
+ *     der verbleibende Offset-Fehler geschätzt und korrigiert (gegen Drift).
+ *  6. Eine Wiederholung = zwei Phasen in entgegengesetzter Richtung. Wurde eine Hälfte
+ *     nicht erkannt (zwei gleiche Phasen hintereinander), zählt die Wiederholung trotzdem.
  */
 class RepDetector {
   constructor(opts) {
     this.cfg = Object.assign({
       minDisp: 0.10,    // m   Mindestweg einer Phase
       vmin: 0.07,       // m/s Mindest-Spitzengeschwindigkeit einer Phase
-      epsHi: 0.04,      // m/s Start-Schwelle
-      epsLo: 0.012,     // m/s Ende-Schwelle
+      minPhase: 0.2,    // s
+      maxPhase: 15,     // s
       calTime: 1.0,     // s   Kalibrierzeit
-      tauG: 0.5,        // s   Schwerkraft-Richtung
-      tauA: 0.08,       // s   Glättung der Beschleunigung
-      tauBase: 2.5,     // s   Offset-Nachführung in Ruhe
-      baseGate: 0.08,   // m/s² Offset wird nur nachgeführt, wenn |a - offset| darunter liegt
-      quietA: 0.06,     // m/s² "ruhig" (v wird in Ruhe zu 0 gezogen)
-      tauIdle: 0.5,     // s   Dämpfung von v in Ruhe
-      quietEnd: 0.4,    // s   Phase endet nach so langer Ruhe, wenn |v| klein
-      quietEndV: 0.06,  // m/s
-      minPhase: 0.25,   // s
-      maxPhase: 12,     // s
-      pairGap: 8,       // s   max. Pause zwischen den zwei Hälften einer Wiederholung
-      driftGain: 0.25,  // Stärke der Offset-Korrektur nach jeder Wiederholung
-      maxBaseStep: 0.04 // m/s² max. Korrektur pro Wiederholung
+      calRange: 0.35,   // m/s² max. Schwankung während der Kalibrierung
+      tauA: 0.06,       // s   Glättung der Beschleunigung
+      win: 0.3,         // s   Fenster der Ruhe-Erkennung
+      steadyR: 0.16,    // m/s² max. Schwankung im Fenster = "gleichmäßig"
+      restA: 0.03,      // m/s² |Beschleunigung| darunter = keine Beschleunigung
+      vz: 0.05,         // m/s  |v| darunter (und gleichmäßig) = Ruhe
+      endFrac: 0.5,     // Phase endet in Ruhe, wenn v unter diesen Anteil der Spitze fällt
+      tauBase: 1.0,     // s   Offset-Nachführung in Ruhe ...
+      baseOld: 0.6,     // s   ... mit so alten Werten
+      holdAfter: 0.5,   // s   nach so langer Ruhe wird v nicht weiter integriert
+      startDisp: 0.03,  // m   Weg, ab dem eine Phase beginnt
+      revDisp: 0.03,    // m   Rückweg, ab dem ein Umkehrpunkt gilt ...
+      revFrac: 0.10,    //     ... bzw. dieser Anteil des bisherigen Wegs
+      catchUp: 0.15,    // s   so viel vom ruhigen Fenster wird beim Bewegungsbeginn nachintegriert
+      hardRest: 4,      // s   so lange völlig gleichmäßig = sicher Ruhe
+      trimFrac: 0.10, trimMin: 0.02, // Beginn/Ende einer Phase: v über diesem Anteil der Spitze
+      mergeGap: 1.2,    // s   gleiche Richtung nach kurzer Pause = dieselbe Phase
+      pairGap: 10,      // s   max. Pause zwischen den Hälften einer Wiederholung
+      zuptGain: 0.3, zuptMax: 0.02,   // Offset-Korrektur aus Rest-Geschwindigkeit in Ruhe
+      loopGain: 0.5, loopMax: 0.03    // Offset-Korrektur aus Weg hoch = Weg runter
     }, opts || {});
     this.reset();
   }
 
   reset() {
-    this.g = null; this.last = null; this.aS = 0; this.base = 0;
-    this.v = 0; this.seg = null; this.idleT = null; this.pending = null;
-    this.reps = []; this.phases = [];
-    this.setStart = null; this.lastEnd = null; this.t = 0;
-    this.calT0 = null; this.calSum = 0; this.calN = 0; this.calibrated = false;
-    this.hist = []; this.quietT = null; this.q = []; this.qOld = null;
+    this.last = null; this.t = 0;
+    this.aS = 0; this.base = 0; this.v = 0; this.p = 0;
+    this.Sv = 0; this.Sp = 0;           // Empfindlichkeit von v bzw. p gegenüber einem Offset-Fehler
+    this.w = []; this.steadyT = null; this.resting = false; this.wasHold = false; this.calmT = null; this.sLo = 0; this.sHi = 0; this.q = []; this.steadyR = this.cfg.steadyR;
+    this.calibrated = false; this.cal = null; this.linOk = true; this.gRef = null; this.magOff = 0;
+    this._clearSet();
+  }
+
+  _clearSet() {
+    this.leg = null; this.pre = [];
+    this.reps = []; this.phases = []; this.pending = null; this.lastPh = null;
+    this.setStart = null; this.lastEnd = null; this.rev = 0; this.typDisp = 0;
   }
 
   // Nur Zähler/Verlauf löschen, Sensor-Zustand (Schwerkraft, Offset) behalten.
-  resetSet() {
-    this.reps = []; this.phases = []; this.pending = null;
-    this.setStart = null; this.lastEnd = null; this.seg = null; this.v = 0;
-    this.idleT = this.t; this.hist = [];
-  }
+  resetSet() { this._clearSet(); this.v = 0; this.Sv = 0; }
 
   push(t, aig, lin) {
     const c = this.cfg, ev = [];
-    if (this.last === null) {
-      this.last = t; this.t = t; this.g = aig.slice(); this.idleT = t;
-      this.calT0 = t; return ev;
-    }
+    if (this.last === null) { this.last = t; this.t = t; return ev; }
     let dt = t - this.last;
     if (dt <= 0) return ev;
     this.last = t; this.t = t;
     if (dt > 0.5) { // Datenlücke -> neu kalibrieren
-      this.seg = null; this.v = 0; this.idleT = t; this.hist = [];
-      this.calibrated = false; this.calT0 = t; this.calSum = 0; this.calN = 0; dt = 0.02;
+      this.leg = null; this.pre = []; this.v = 0; this.Sv = 0; this.w = []; this.steadyT = null;
+      this.calibrated = false; this.cal = null; dt = 0.02;
     }
     if (dt > 0.1) dt = 0.1;
 
-    // Schwerkraft-Richtung ("oben")
-    const g = this.g, ag = Math.min(1, dt / c.tauG);
-    for (let i = 0; i < 3; i++) g[i] += (aig[i] - g[i]) * ag;
-    const gn = Math.hypot(g[0], g[1], g[2]) || 1;
-    const ux = g[0] / gn, uy = g[1] / gn, uz = g[2] / gn;
+    // Vertikalbeschleunigung
+    let a, gm = 0;
+    if (lin && this.linOk) { // Richtung "oben" aus der Sensorfusion des Handys, Betrag aus den Rohdaten
+      const gx = aig[0] - lin[0], gy = aig[1] - lin[1], gz = aig[2] - lin[2];
+      gm = Math.hypot(gx, gy, gz) || 1;
+      a = (aig[0] * gx + aig[1] * gy + aig[2] * gz) / gm;
+      // Echte Fusion liefert eine Schwerkraft mit konstantem Betrag. Schwankt er, ist "lin" nur
+      // ein Hochpass der Rohdaten -> dann lieber den Betrag der Gesamtbeschleunigung nehmen.
+      if (this.gRef !== null && Math.abs(gm - this.gRef) > 0.12) { this.linOk = false; this.base += this.magOff; }
+    }
+    const am = Math.hypot(aig[0], aig[1], aig[2]);
+    if (!lin || !this.linOk) a = am; // unabhängig von der Lage des Handys
 
-    const src = lin || aig;
-    const a = src[0] * ux + src[1] * uy + src[2] * uz;
-
-    // Kalibrierung
+    // Kalibrierung: 1 s lang ruhig. Gelingt das 4 s lang nicht (unruhige Hand, rauschender Sensor),
+    // wird mit der letzten Sekunde gestartet und die Ruhe-Schwelle an das Rauschen angepasst.
     if (!this.calibrated) {
-      this.calSum += a; this.calN++;
-      this.aS = a;
-      if (t - this.calT0 >= c.calTime && this.calN > 5) {
-        this.base = this.calSum / this.calN; this.aS = this.base;
-        this.calibrated = true; this.idleT = t; this.v = 0; this.q = []; this.qOld = null;
-      }
+      let k = this.cal;
+      if (!k) { k = this.cal = { t0: t, q: [] }; this.aS = a; }
+      this.aS += (a - this.aS) * Math.min(1, dt / c.tauA);
+      k.q.push([t, a, am, this.aS]);
+      while (t - k.q[0][0] > c.calTime) k.q.shift();
+      if (t - k.t0 < c.calTime || k.q.length < 6) return ev;
+      let lo = Infinity, hi = -Infinity, sum = 0, sumM = 0;
+      for (let i = 0; i < k.q.length; i++) { const x = k.q[i]; sum += x[1]; sumM += x[2]; if (x[3] < lo) lo = x[3]; if (x[3] > hi) hi = x[3]; }
+      if (hi - lo > c.calRange && t - k.t0 < 4) return ev;
+      const n = k.q.length;
+      this.base = sum / n; this.aS = this.base; this.calibrated = true; this.cal = null;
+      this.gRef = gm || null; this.magOff = (sumM - sum) / n;
+      this.steadyR = Math.min(0.6, Math.max(c.steadyR, 1.3 * (hi - lo)));
+      this.v = 0; this.p = 0; this.Sv = 0; this.Sp = 0; this.w = []; this.q = []; this.steadyT = null; this.calmT = null;
+      this.pre = [[t, 0, 0, 0]];
       return ev;
     }
 
     this.aS += (a - this.aS) * Math.min(1, dt / c.tauA);
-    let acc = this.aS - this.base;
 
-    // Offset nachführen: nur wenn das Handy die letzten 0,7 s wirklich ruhig war,
-    // und mit einem 0,7 s alten Wert (damit der Beginn einer Bewegung nie einfließt).
-    this.q.push([t, this.aS]);
-    let quiet = true;
-    for (let i = 0; i < this.q.length; i++) if (Math.abs(this.q[i][1] - this.base) >= c.baseGate) { quiet = false; break; }
-    while (this.q.length && t - this.q[0][0] > 0.7) this.qOld = this.q.shift();
-    if (!this.seg && quiet && this.qOld) {
-      this.base += (this.qOld[1] - this.base) * Math.min(1, dt / c.tauBase);
-      acc = this.aS - this.base;
+    // Fenster: ist die Beschleunigung gleichmäßig?
+    const w = this.w; w.push([t, this.aS]);
+    while (w.length > 2 && t - w[1][0] >= c.win) w.shift();
+    let lo = Infinity, hi = -Infinity, sum = 0;
+    for (let i = 0; i < w.length; i++) { const x = w[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; sum += x; }
+    const mean = sum / w.length;
+    const steady = t - w[0][0] >= c.win * 0.9 && hi - lo < this.steadyR;
+    // "flach": über längere Zeit in einem engen Band (für die sichere Ruhe-Erkennung)
+    if (steady) {
+      if (this.steadyT === null) { this.steadyT = w[0][0]; this.sLo = lo; this.sHi = hi; }
+      if (lo < this.sLo) this.sLo = lo; if (hi > this.sHi) this.sHi = hi;
+      if (this.sHi - this.sLo > this.steadyR) { this.steadyT = w[0][0]; this.sLo = lo; this.sHi = hi; }
+    } else this.steadyT = null;
+    const flatDur = steady ? t - this.steadyT : 0;
+
+    // "ruhig": gleichmäßig und ~0 -> es wirkt keine Beschleunigung (Ruhe ODER gleichförmige Bewegung).
+    const calm = steady && Math.abs(mean - this.base) < c.restA;
+    if (calm) { if (this.calmT === null) this.calmT = w[0][0]; } else this.calmT = null;
+    const calmDur = calm ? t - this.calmT : 0;
+    // Offset nachführen: nur bei länger anhaltender Ruhe und mit älteren Werten,
+    // damit der (langsame) Beginn einer Bewegung nie als Offset gelernt wird.
+    const q = this.q; q.push([t, this.aS]);
+    while (q.length && t - q[0][0] > c.baseOld + 0.3) q.shift();
+    if (calmDur >= c.baseOld + 0.3) {
+      let sm = 0, n = 0;
+      for (let i = 0; i < q.length && t - q[i][0] >= c.baseOld; i++) { sm += q[i][1]; n++; }
+      if (n) this.base += (sm / n - this.base) * Math.min(1, dt / c.tauBase);
     }
+    // Integration. Bei länger anhaltender Ruhe bleibt v stehen (Offset-Fehler summieren sich nicht auf).
+    const hold = calmDur >= c.holdAfter;
+    if (!hold) {
+      if (this.wasHold) { // Beginn einer Beschleunigung: den Anfang (noch im ruhigen Fenster) nachholen
+        for (let i = w.length - 2; i > 0 && t - w[i][0] < c.catchUp; i--) {
+          const d = (w[i][1] - this.base) * (w[i + 1][0] - w[i][0]);
+          this.v += d; this.p += d * (t - w[i][0]);
+        }
+      }
+      this.v += (this.aS - this.base) * dt; this.Sv += dt;
+    }
+    this.wasHold = hold;
+    this.p += this.v * dt; this.Sp += this.Sv * dt;
 
-    // Geschwindigkeit
-    this.v += acc * dt;
-    if (!this.seg && Math.abs(acc) < c.quietA) this.v -= this.v * Math.min(1, dt / c.tauIdle);
-    const v = this.v;
+    // Ruhe?
+    const L = this.leg;
+    const travel = L ? (L.ext - L.p0) * L.dir : 0;
+    let rest = false;
+    if (calm) {
+      const av = Math.abs(this.v);
+      rest = av < c.vz ||
+             (L && travel >= c.minDisp && av < c.endFrac * L.peak) ||
+             (calmDur >= 1.0 && travel < c.minDisp);
+    }
+    if (flatDur >= c.hardRest) { rest = true; this.base = mean; } // lange völlig gleichmäßig -> sicher Ruhe
+    if (rest) {
+      if (!this.resting && this.Sv > 1.0) { // Rest-Geschwindigkeit = Offset-Fehler seit der letzten Ruhe
+        const e = c.zuptGain * this.v / this.Sv;
+        this.base += Math.max(-c.zuptMax, Math.min(c.zuptMax, e));
+      }
+      this.v = 0; this.Sv = 0;
+    }
+    this.resting = rest;
+    const v = this.v, p = this.p;
 
-    // Ruhe-Erkennung der Beschleunigung
-    if (Math.abs(acc) < 0.05) { if (this.quietT === null) this.quietT = t; }
-    else this.quietT = null;
-
-    if (!this.seg) {
-      this.hist.push([t, v]);
-      while (this.hist.length && t - this.hist[0][0] > 0.8) this.hist.shift();
-      if (Math.abs(v) > c.epsHi) {
-        const dir = v > 0 ? 1 : -1;
-        this.seg = { dir, t0: this.idleT, disp: 0, peak: 0,
-                     tr: this.hist.filter(h => h[0] >= this.idleT - 0.3).map(h => [h[0], h[1] * dir]) };
-        this.hist = [];
-      } else {
-        this.idleT = t;
+    if (!this.leg) {
+      const pre = this.pre;
+      if (rest) pre.length = 0;
+      pre.push([t, v, p, this.Sp]);
+      while (pre.length > 1 && t - pre[0][0] > 0.8) pre.shift();
+      const d = p - pre[0][2];
+      if (Math.abs(d) >= c.startDisp) {
+        const dir = d > 0 ? 1 : -1;
+        this.leg = { dir, t0: pre[0][0], p0: pre[0][2], S0: pre[0][3], ext: p, tExt: t, SExt: this.Sp, peak: Math.abs(v),
+                     tr: pre.map(h => [h[0], h[1] * dir]) };
+        this.pre = [];
       }
     } else {
-      this.seg.tr.push([t, v * this.seg.dir]);
-    }
-    if (this.seg) {
-      const s = this.seg, sv = v * s.dir;
-      s.disp += sv * dt;
+      const s = this.leg, sv = v * s.dir;
+      s.tr.push([t, sv]);
       if (sv > s.peak) s.peak = sv;
-      const elapsed = t - s.t0;
-      // Ruhe in der Beschleunigung + Geschwindigkeit klein (absolut oder im Vergleich zur Spitze)
-      // -> Phase ist zu Ende (auch wenn ein kleiner Geschwindigkeits-Offset übrig ist).
-      const quietEnd = this.quietT !== null && t - this.quietT >= c.quietEnd &&
-                       (sv < c.quietEndV || sv < 0.35 * s.peak);
-      if (sv < c.epsLo || quietEnd || elapsed > c.maxPhase) {
-        // genaue Zeiten aus dem Geschwindigkeitsverlauf: Anteil der Spitzengeschwindigkeit
-        const thr = Math.max(0.05 * s.peak, 0.015);
-        const tEnd = (quietEnd && sv >= c.epsLo) ? this.quietT : Infinity; // Ende = Beginn der Ruhe
-        let i0 = -1, i1 = -1;
-        for (let i = 0; i < s.tr.length; i++) {
-          if (s.tr[i][0] > tEnd) break;
-          if (s.tr[i][1] > thr) { if (i0 < 0) i0 = i; i1 = i; }
-        }
-        this.seg = null; this.v = 0; this.idleT = t; this.hist = [];
-        if (i0 >= 0 && elapsed <= c.maxPhase) {
-          const t0 = s.tr[i0][0], t1 = s.tr[i1][0], dur = t1 - t0;
-          if (dur >= c.minPhase && s.disp >= c.minDisp && s.peak >= c.vmin)
-            this._phase({ dir: s.dir, t0, t1, dur, disp: s.disp, peak: s.peak }, ev);
-        }
+      if ((p - s.ext) * s.dir > 0) { s.ext = p; s.tExt = t; s.SExt = this.Sp; }
+      const back = (s.ext - p) * s.dir;
+      if (rest) {
+        this._finish(s, t, ev);
+        this.leg = null; this.pre = [[t, 0, p, this.Sp]];
+      } else if (back >= Math.max(c.revDisp, c.revFrac * travel)) {
+        // Umkehrpunkt: Phase endet am Extrempunkt, die Gegenrichtung läuft seitdem
+        this._finish(s, s.tExt, ev);
+        const tr = []; let pk = 0;
+        for (let i = 0; i < s.tr.length; i++) if (s.tr[i][0] >= s.tExt) { tr.push([s.tr[i][0], -s.tr[i][1]]); if (-s.tr[i][1] > pk) pk = -s.tr[i][1]; }
+        this.leg = { dir: -s.dir, t0: s.tExt, p0: s.ext, S0: s.SExt, ext: p, tExt: t, SExt: this.Sp, peak: pk, tr };
+      } else if (t - s.t0 > c.maxPhase || travel > Math.min(2.5, Math.max(1.0, 3 * this.typDisp))) {
+        // Unplausibel lange/weite "Phase" = Drift. Die mittlere Geschwindigkeit über diese Zeit muss
+        // ~0 gewesen sein (das Gewicht pendelt nur) -> abziehen und den Offset etwas nachziehen.
+        const T = Math.max(0.5, t - s.t0), vm = travel / T * s.dir;
+        this.v -= vm; this.base += Math.max(-0.03, Math.min(0.03, vm / T));
+        this.leg = null; this.Sv = 0; this.pre = [[t, this.v, p, this.Sp]];
       }
     }
     return ev;
   }
 
+  // Phase abschließen: prüfen und genaue Zeiten aus dem Geschwindigkeitsverlauf bestimmen
+  _finish(s, tEnd, ev) {
+    const c = this.cfg, disp = (s.ext - s.p0) * s.dir;
+    if (disp < c.minDisp || s.peak < c.vmin) return;
+    const thr = Math.max(c.trimFrac * s.peak, c.trimMin);
+    let i0 = -1, i1 = -1;
+    for (let i = 0; i < s.tr.length; i++) {
+      if (s.tr[i][0] > tEnd) break;
+      if (s.tr[i][1] > thr) { if (i0 < 0) i0 = i; i1 = i; }
+    }
+    if (i0 < 0) return;
+    const t0 = s.tr[i0][0], t1 = s.tr[i1][0];
+    if (t1 - t0 < c.minPhase) return;
+    this._phase({ dir: s.dir, t0, t1, dur: t1 - t0, disp, peak: s.peak, pA: s.p0, SA: s.S0, pB: s.ext, SB: s.SExt, rep: null }, ev);
+  }
+
   _phase(ph, ev) {
-    const c = this.cfg;
+    const c = this.cfg, last = this.lastPh;
     if (this.setStart === null) this.setStart = ph.t0;
     this.lastEnd = ph.t1;
-    this.phases.push(ph);
+
+    // Gleiche Richtung kurz nach der letzten Phase -> gehört dazu (z. B. kurzes Stocken)
+    if (last && last.dir === ph.dir && ph.t0 - last.t1 < c.mergeGap) {
+      last.t1 = ph.t1; last.dur = last.t1 - last.t0; last.disp += ph.disp; last.peak = Math.max(last.peak, ph.peak);
+      last.pB = ph.pB; last.SB = ph.SB;
+      const r = last.rep;
+      if (r) { if (last.dir > 0) r.up = last.dur; else r.down = last.dur; r.t1 = last.t1; r.total = r.t1 - r.t0; this.rev++; }
+      return;
+    }
+    // Drift-Korrektur: Der Umkehrpunkt liegt auf gleicher Höhe wie der vorletzte
+    // (oben wie oben, unten wie unten). Die Abweichung kommt vom Offset-Fehler.
+    const pp = this.phases.length > 1 ? this.phases[this.phases.length - 2] : null;
+    if (last && pp && last.dir !== ph.dir && pp.dir === ph.dir && ph.t0 - pp.t1 <= 2 * c.pairGap) {
+      const dS = ph.SB - pp.SB;
+      if (dS > 0.2) {
+        const e = Math.max(-c.loopMax, Math.min(c.loopMax, c.loopGain * (ph.pB - pp.pB) / dS));
+        this.base += e; this.v -= e * this.Sv;
+      }
+    }
+    this.phases.push(ph); this.lastPh = ph;
+    this.typDisp = this.typDisp ? this.typDisp + 0.3 * (ph.disp - this.typDisp) : ph.disp;
     ev.push({ type: 'phase', phase: ph });
+
     const p = this.pending;
     if (p && p.dir !== ph.dir && ph.t0 - p.t1 <= c.pairGap) {
-      const up = p.dir > 0 ? p : ph, down = p.dir > 0 ? ph : p;
-      const rep = {
-        n: this.reps.length + 1,
-        firstDir: p.dir,
-        up: up.dur, down: down.dur,
-        total: ph.t1 - p.t0,
-        t0: p.t0, t1: ph.t1
-      };
       this.pending = null;
-      this.reps.push(rep);
-      ev.push({ type: 'rep', rep });
-      // Drift-Korrektur: Nach einer Wiederholung ist das Gewicht wieder am Ausgangspunkt,
-      // Weg hoch und Weg runter müssen also gleich groß sein. Die Abweichung M entsteht durch
-      // einen Offset e der Beschleunigung (M ≈ e·T²/2) -> Offset nachziehen.
-      const M = p.dir * p.disp + ph.dir * ph.disp;
-      const Tm = p.dur + ph.dur;
-      let e = 2 * M / (Tm * Tm);
-      e = Math.max(-c.maxBaseStep, Math.min(c.maxBaseStep, c.driftGain * e));
-      this.base += e;
+      this._rep(p, ph, ev);
+    } else if (p && p.dir === ph.dir) {
+      // Gegenrichtung wurde nicht erkannt -> Wiederholung trotzdem zählen
+      this._rep(p, null, ev);
+      this.pending = ph;
+    } else if (!p && last && last.rep && last.dir === ph.dir && ph.t0 - last.t1 <= c.pairGap) {
+      this._rep(null, ph, ev);
     } else {
       this.pending = ph;
     }
   }
 
+  _rep(a, b, ev) {
+    const up = (a && a.dir > 0) ? a : (b && b.dir > 0) ? b : null;
+    const down = (a && a.dir < 0) ? a : (b && b.dir < 0) ? b : null;
+    const f = a || b, l = b || a;
+    const rep = { n: this.reps.length + 1, firstDir: a ? a.dir : -b.dir,
+                  up: up ? up.dur : null, down: down ? down.dur : null,
+                  total: l.t1 - f.t0, t0: f.t0, t1: l.t1 };
+    if (a) a.rep = rep; if (b) b.rep = rep;
+    this.reps.push(rep); this.rev++;
+    ev.push({ type: 'rep', rep });
+  }
+
   // Für die Anzeige
   state() {
-    const s = this.seg;
+    const s = this.leg;
+    const live = s && (s.ext - s.p0) * s.dir >= 0.05 && s.peak >= this.cfg.vmin;
     return {
       v: this.v,
       calibrating: !this.calibrated,
-      live: s ? { dir: s.dir, elapsed: this.t - s.t0 } : null,
+      live: live ? { dir: s.dir, elapsed: this.t - s.t0 } : null,
       count: this.reps.length,
       reps: this.reps,
+      rev: this.rev,
       setStart: this.setStart,
       lastEnd: this.lastEnd,
       t: this.t
     };
   }
 }
-
 
 </script>
 <script>
@@ -403,10 +506,11 @@ class RepDetector {
   var wakeLock = null, audioCtx = null;
   var hist = [];                // [t, v, dir] für das Diagramm
   var shownCount = -1, lastHistT = 0;
+  var rec = [];                 // Rohdaten des letzten Laufs (für die Fehlersuche)
 
   // ---------- Hilfsfunktionen ----------
   function fmt(x, d) { return x.toFixed(d === undefined ? 1 : d).replace('.', ','); }
-  function fmtS(x) { return fmt(x, 1) + ' s'; }
+  function fmtS(x) { return x == null ? '–' : fmt(x, 1) + ' s'; }
   function fmtSet(x) { if (x >= 60) { var m = Math.floor(x / 60); return m + ':' + (x - m * 60 < 10 ? '0' : '') + fmt(x - m * 60, 1); } return fmt(x, 1) + ' s'; }
   function nowT() { return performance.now() / 1000; }
 
@@ -442,6 +546,7 @@ class RepDetector {
     var t = (e.timeStamp || performance.now()) / 1000;
     if (evCount === 0) firstEvT = t;
     evCount++; lastEvT = t;
+    if (rec.length < 120000) rec.push([t, ag.x, ag.y, ag.z, useLin ? a.x : '', useLin ? a.y : '', useLin ? a.z : '']);
     handle(det.push(t, [ag.x, ag.y, ag.z], useLin ? [a.x, a.y, a.z] : null));
   }
 
@@ -481,7 +586,7 @@ class RepDetector {
   }
 
   function beginRun() {
-    mode = 'running'; evCount = 0; useLin = null;
+    mode = 'running'; evCount = 0; useLin = null; rec = [];
     det.reset(); hist = []; shownCount = -1;
     if (audioCtx) { try { beep(); } catch (e) {} }
     clearTimeout(signalTimer);
@@ -546,6 +651,24 @@ class RepDetector {
     }, 16);
   });
 
+  // ---------- Messdaten ----------
+  $('saveBtn').addEventListener('click', function () {
+    if (!rec.length) { showBanner('Noch keine Messdaten vorhanden – erst einen Satz aufzeichnen.'); return; }
+    var lines = ['t,agx,agy,agz,ax,ay,az'], i, r, j;
+    for (i = 0; i < rec.length; i++) {
+      r = rec[i]; var row = [r[0].toFixed(4)];
+      for (j = 1; j < 7; j++) row.push(r[j] === '' ? '' : r[j].toFixed(4));
+      lines.push(row.join(','));
+    }
+    lines.push('# reps=' + det.reps.length + ' minDisp=' + det.cfg.minDisp);
+    try {
+      var url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+      var aEl = document.createElement('a'); aEl.href = url; aEl.download = 'rep-zaehler-messdaten.csv';
+      document.body.appendChild(aEl); aEl.click(); aEl.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+    } catch (e) { showBanner('Speichern nicht möglich: ' + e.message); }
+  });
+
   // ---------- Einstellungen ----------
   var slider = $('minDisp');
   slider.value = store.get('minDisp', 10);
@@ -601,14 +724,14 @@ class RepDetector {
     }
     if (mode === 'running' && !demo && evCount > 20) {
       var hz = Math.round((evCount - 1) / Math.max(0.001, lastEvT - firstEvT));
-      $('sensorInfo').textContent = 'Aktiv, ca. ' + hz + ' Hz, ' + (useLin ? 'lineare Beschleunigung' : 'Beschleunigung inkl. Schwerkraft');
+      $('sensorInfo').textContent = 'Aktiv, ca. ' + hz + ' Hz, ' + (useLin ? 'mit Lagesensor' : 'ohne Lagesensor');
     } else if (mode === 'idle' && evCount === 0) { $('sensorInfo').textContent = 'Wird beim Start geprüft.'; }
 
     // Zähler
-    if (s.count !== shownCount) {
+    if (s.rev !== shownCount) {
       $('num').textContent = s.count;
       renderRows(s);
-      shownCount = s.count;
+      shownCount = s.rev;
     }
 
     // Live-Phase
@@ -651,10 +774,14 @@ class RepDetector {
     }
     tb.innerHTML = html;
     if (reps.length) {
-      var l = reps[reps.length - 1], su = 0, sdn = 0, st = 0;
-      reps.forEach(function (r) { su += r.up; sdn += r.down; st += r.total; });
+      var l = reps[reps.length - 1], su = 0, nu = 0, sdn = 0, nd = 0, st = 0, nt = 0;
+      reps.forEach(function (r) {
+        if (r.up != null) { su += r.up; nu++; }
+        if (r.down != null) { sdn += r.down; nd++; }
+        if (r.up != null && r.down != null) { st += r.total; nt++; }
+      });
       $('lastUp').textContent = fmtS(l.up); $('lastDown').textContent = fmtS(l.down); $('lastTotal').textContent = fmtS(l.total);
-      $('avgUp').textContent = 'Ø ' + fmtS(su / reps.length); $('avgDown').textContent = 'Ø ' + fmtS(sdn / reps.length); $('avgTotal').textContent = 'Ø ' + fmtS(st / reps.length);
+      $('avgUp').textContent = 'Ø ' + fmtS(nu ? su / nu : null); $('avgDown').textContent = 'Ø ' + fmtS(nd ? sdn / nd : null); $('avgTotal').textContent = 'Ø ' + fmtS(nt ? st / nt : null);
     } else {
       ['lastUp', 'lastDown', 'lastTotal'].forEach(function (id) { $(id).textContent = '–'; });
       ['avgUp', 'avgDown', 'avgTotal'].forEach(function (id) { $(id).textContent = 'Ø –'; });
