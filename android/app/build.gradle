@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'de.repzaehler'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'de.repzaehler'
+        minSdk 26
+        targetSdk 34
+        // Wird beim Bauen auf GitHub hochgezählt, damit sich neue Versionen über die alte installieren lassen
+        versionCode Integer.parseInt((project.findProperty('verCode') ?: '1').toString())
+        versionName '1.' + (project.findProperty('verCode') ?: '0').toString()
+    }
+
+    // Fester Schlüssel im Projekt: jede gebaute APK hat dieselbe Signatur,
+    // Updates lassen sich so ohne Deinstallieren einspielen.
+    signingConfigs {
+        fixed {
+            storeFile file('../signing/repzaehler.jks')
+            storePassword 'repzaehler'
+            keyAlias 'repzaehler'
+            keyPassword 'repzaehler'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.fixed
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

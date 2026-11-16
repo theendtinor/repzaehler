@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#0E1116" android:pathData="M0,0h108v108h-108z" />
+    <!-- Hantel -->
+    <path android:fillColor="#3DDC84" android:pathData="M26,38h10v32h-10z" />
+    <path android:fillColor="#3DDC84" android:pathData="M72,38h10v32h-10z" />
+    <path android:fillColor="#3DDC84" android:pathData="M18,45h8v18h-8z" />
+    <path android:fillColor="#3DDC84" android:pathData="M82,45h8v18h-8z" />
+    <path android:fillColor="#EEF1F6" android:pathData="M36,51h36v6h-36z" />
+</vector>
